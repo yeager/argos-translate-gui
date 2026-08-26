@@ -9,6 +9,8 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 
+from argostranslategui.i18n import install_system_translator
+
 
 class PlainPasteTextEdit(QTextEdit):
     """Forces pasted text to have formatting cleared"""
@@ -42,7 +44,7 @@ class TranslationThread(QThread):
 
     def run(self):
         if self.show_loading_message:
-            self.send_text_update.emit("Loading...")
+            self.send_text_update.emit(self.tr("Loading..."))
         translated_text = self.translation_function()
         self.send_text_update.emit(translated_text)
 
@@ -100,11 +102,18 @@ class PackagesTable(QTableWidget):
 
         self.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        headers = ["Readme", "Name", "Package name", "From code", "To code", "Version"]
+        headers = [
+            self.tr("Readme"),
+            self.tr("Name"),
+            self.tr("Package name"),
+            self.tr("From code"),
+            self.tr("To code"),
+            self.tr("Version"),
+        ]
         if self.AvailableActions.UNINSTALL in self.available_actions:
-            headers.append("Uninstall")
+            headers.append(self.tr("Uninstall"))
         if self.AvailableActions.INSTALL in self.available_actions:
-            headers.append("Install")
+            headers.append(self.tr("Install"))
         self.setColumnCount(len(headers))
         self.setHorizontalHeaderLabels(headers)
         self.verticalHeader().setVisible(False)
@@ -142,7 +151,7 @@ class PackagesTable(QTableWidget):
             from_code = pkg.from_code
             to_code = pkg.to_code
             pkg = packages[i]
-            readme_button = QPushButton("view")
+            readme_button = QPushButton(self.tr("View"))
             bound_view_package_readme_function = partial(self.view_package_readme, pkg)
             readme_button.clicked.connect(bound_view_package_readme_function)
             row_index = 0
@@ -174,7 +183,7 @@ class PackagesTable(QTableWidget):
                     install_button = WorkerStatusButton("⬇", bound_install_function)
                     self.setCellWidget(i, row_index, install_button)
                 else:
-                    self.setItem(i, row_index, QTableWidgetItem("Installed"))
+                    self.setItem(i, row_index, QTableWidgetItem(self.tr("Installed")))
                 row_index += 1
         # Resize table widget
         self.setMinimumSize(QSize(0, 0))
@@ -194,10 +203,10 @@ class PackagesTable(QTableWidget):
             # read-only filesystem and can't be deleted
             if "SNAP" in os.environ:
                 error_message_box = QMessageBox()
-                error_message_box.setWindowTitle("Error")
+                error_message_box.setWindowTitle(self.tr("Error"))
                 error_message_box.setText(
-                    "Error deleting package: \n"
-                    + "Packages pre-installed in a snap archive can't be deleted"
+                    self.tr("Error deleting package:\n"
+                            "Packages pre-installed in a snap archive can't be deleted")
                 )
                 error_message_box.setIcon(QMessageBox.Warning)
                 error_message_box.exec_()
@@ -243,13 +252,13 @@ class ManagePackagesWindow(QWidget):
                 self.packages_changed.emit
             )
 
-        self.download_packages_button = QPushButton("Download packages")
+        self.download_packages_button = QPushButton(self.tr("Download packages"))
         self.download_packages_button.clicked.connect(
             partial(open_download_packages_view, self)
         )
 
         # Install from file
-        self.install_package_file_button = QPushButton("Install package file")
+        self.install_package_file_button = QPushButton(self.tr("Install package file"))
         self.install_package_file_button.clicked.connect(self.add_packages)
 
         # Add packages row
@@ -275,9 +284,9 @@ class ManagePackagesWindow(QWidget):
         file_dialog = QFileDialog()
         filepaths = file_dialog.getOpenFileNames(
             self,
-            "Select .argosmodel package files",
+            self.tr("Select .argosmodel package files"),
             str(Path.home()),
-            "Argos Models (*.argosmodel)",
+            self.tr("Argos Models (*.argosmodel)"),
         )[0]
         if len(filepaths) > 0:
             for file_path in filepaths:
@@ -350,21 +359,21 @@ class GUIWindow(QMainWindow):
 
         # TextEdits
         self.left_textEdit = PlainPasteTextEdit()
-        self.left_textEdit.setPlainText("Text to translate from")
+        self.left_textEdit.setPlainText(self.tr("Text to translate from"))
         self.left_textEdit.textChanged.connect(self.translate)
         self.right_textEdit = PlainPasteTextEdit()
-        self.right_textEdit.setPlainText("Text to translate to")
+        self.right_textEdit.setPlainText(self.tr("Text to translate to"))
         self.textEdit_layout = QHBoxLayout()
         self.textEdit_layout.addWidget(self.left_textEdit)
         self.textEdit_layout.addWidget(self.right_textEdit)
 
         # Menu
         self.menu = self.menuBar()
-        self.manage_packages_action = self.menu.addAction("Manage Packages")
+        self.manage_packages_action = self.menu.addAction(self.tr("Manage Packages"))
         self.manage_packages_action.triggered.connect(
             self.manage_packages_action_triggered
         )
-        self.about_action = self.menu.addAction("About")
+        self.about_action = self.menu.addAction(self.tr("About"))
         self.about_action.triggered.connect(self.about_action_triggered)
         self.menu.setNativeMenuBar(False)
 
@@ -389,7 +398,7 @@ class GUIWindow(QMainWindow):
 
     def about_action_triggered(self):
         about_message_box = QMessageBox()
-        about_message_box.setWindowTitle("About")
+        about_message_box.setWindowTitle(self.tr("About"))
         about_message_box.setText(settings.about_text)
         about_message_box.setIcon(QMessageBox.Information)
         about_message_box.exec_()
@@ -453,6 +462,7 @@ class GUIWindow(QMainWindow):
 class GUIApplication:
     def __init__(self):
         self.app = QApplication([])
+        self.translator = install_system_translator(self.app)
         self.main_window = GUIWindow()
 
         # Icon

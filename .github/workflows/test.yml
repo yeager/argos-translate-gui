@@ -1,0 +1,28 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes qttools5-dev-tools
+          python -m pip install --upgrade pip
+          python -m pip install pytest PyQt5 setuptools wheel
+      - name: Test catalogs
+        run: pytest -q
+      - name: Build translations
+        run: python setup.py build_py
+      - name: Verify generated catalog
+        run: |
+          test -f build/lib/argostranslategui/translations/argos_translate_sv.qm
+          test ! -e translations/argos_translate_sv.qm
