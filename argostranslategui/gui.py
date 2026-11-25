@@ -1,3 +1,4 @@
+import importlib.util
 import os
 from enum import Enum
 from functools import partial
@@ -21,6 +22,8 @@ class PlainPasteTextEdit(QTextEdit):
 
 class WorkerThread(QThread):
     """Runs a bound function on a thread"""
+    succeeded = pyqtSignal()
+    failed = pyqtSignal(str)
 
     def __init__(self, bound_worker_function):
         """Args:
@@ -31,22 +34,33 @@ class WorkerThread(QThread):
         self.finished.connect(self.deleteLater)
 
     def run(self):
-        self.bound_worker_function()
+        try:
+            self.bound_worker_function()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit()
 
 
 class TranslationThread(QThread):
-    send_text_update = pyqtSignal(str)
+    send_text_update = pyqtSignal(int, str)
+    failed = pyqtSignal(int, str)
 
-    def __init__(self, translation_function, show_loading_message):
+    def __init__(self, translation_function, show_loading_message, request_id):
         super().__init__()
         self.translation_function = translation_function
         self.show_loading_message = show_loading_message
+        self.request_id = request_id
 
     def run(self):
         if self.show_loading_message:
-            self.send_text_update.emit(self.tr("Loading..."))
-        translated_text = self.translation_function()
-        self.send_text_update.emit(translated_text)
+            self.send_text_update.emit(self.request_id, self.tr("Loading..."))
+        try:
+            translated_text = self.translation_function()
+        except Exception as exc:
+            self.failed.emit(self.request_id, str(exc))
+        else:
+            self.send_text_update.emit(self.request_id, translated_text)
 
 
 class WorkerStatusButton(QPushButton):
@@ -54,6 +68,7 @@ class WorkerStatusButton(QPushButton):
         NOT_STARTED = 0
         RUNNING = 1
         DONE = 2
+        FAILED = 3
 
     def __init__(self, text, bound_worker_function):
         super().__init__(text)
@@ -64,24 +79,39 @@ class WorkerStatusButton(QPushButton):
 
     def clicked_handler(self):
         info("WorkerStatusButton clicked_handler")
-        if self.status == self.Status.NOT_STARTED:
+        if self.status in (self.Status.NOT_STARTED, self.Status.FAILED):
+            self.worker_succeeded = False
             self.worker_thread = WorkerThread(self.bound_worker_function)
+            self.worker_thread.succeeded.connect(self.succeeded_handler)
+            self.worker_thread.failed.connect(self.failed_handler)
             self.worker_thread.finished.connect(self.finished_handler)
             self.set_status(self.Status.RUNNING)
             self.worker_thread.start()
 
     def finished_handler(self):
         info("WorkerStatusButton finished_handler")
-        self.set_status(self.Status.DONE)
+        self.worker_thread = None
+        self.set_status(self.Status.DONE if self.worker_succeeded else self.Status.FAILED)
+
+    def succeeded_handler(self):
+        self.worker_succeeded = True
+
+    def failed_handler(self, message):
+        error(message)
+        self.setToolTip("Operation failed: " + message + "\nClick to retry.")
 
     def set_status(self, status):
         self.status = status
         if self.status == self.Status.NOT_STARTED:
             self.setText(self.text)
         elif self.status == self.Status.RUNNING:
+            self.setToolTip("")
             self.setText("⌛")
         elif self.status == self.Status.DONE:
             self.setText("✓")
+        elif self.status == self.Status.FAILED:
+            self.setText("Retry")
+        self.setEnabled(status in (self.Status.NOT_STARTED, self.Status.FAILED))
 
 
 class PackagesTable(QTableWidget):
@@ -212,7 +242,6 @@ class PackagesTable(QTableWidget):
                 error_message_box.exec_()
             else:
                 raise e
-        self.packages_changed.emit()
         self.populate()
         self.packages_changed.emit()
 
@@ -340,6 +369,7 @@ class GUIWindow(QMainWindow):
         # the currently running TranslationThread finishes.
         # None if there is no waiting TranslationThread.
         self.queued_translation = None
+        self.translation_request_id = 0
 
         # Language selection
         self.left_language_combo = QComboBox()
@@ -390,11 +420,15 @@ class GUIWindow(QMainWindow):
         self.setWindowTitle("Argos Translate")
 
     def swap_languages_button_clicked(self):
+        blockers = [QSignalBlocker(self.left_language_combo),
+                    QSignalBlocker(self.right_language_combo)]
         left_index = self.left_language_combo.currentIndex()
         self.left_language_combo.setCurrentIndex(
             self.right_language_combo.currentIndex()
         )
         self.right_language_combo.setCurrentIndex(left_index)
+        del blockers
+        self.translate()
 
     def about_action_triggered(self):
         about_message_box = QMessageBox()
@@ -409,20 +443,30 @@ class GUIWindow(QMainWindow):
         self.packages_window.show()
 
     def load_languages(self):
+        left_code = self.left_language_combo.currentData()
+        right_code = self.right_language_combo.currentData()
         self.languages = translate.load_installed_languages()
-        language_names = tuple([language.name for language in self.languages])
-        self.left_language_combo.clear()
-        self.left_language_combo.addItems(language_names)
-        if len(language_names) > 0:
-            self.left_language_combo.setCurrentIndex(0)
-        self.right_language_combo.clear()
-        self.right_language_combo.addItems(language_names)
-        if len(language_names) > 1:
-            self.right_language_combo.setCurrentIndex(1)
+        blockers = [QSignalBlocker(self.left_language_combo),
+                    QSignalBlocker(self.right_language_combo)]
+        for combo, code, default in (
+            (self.left_language_combo, left_code, 0),
+            (self.right_language_combo, right_code, min(1, len(self.languages) - 1)),
+        ):
+            combo.clear()
+            for language in self.languages:
+                combo.addItem(language.name, language.code)
+            index = combo.findData(code) if code is not None else -1
+            combo.setCurrentIndex(index if index >= 0 else default)
+        del blockers
         self.translate()
 
-    def update_right_textEdit(self, text):
-        self.right_textEdit.setPlainText(text)
+    def update_right_textEdit(self, request_id, text):
+        if request_id == self.translation_request_id:
+            self.right_textEdit.setPlainText(text)
+
+    def translation_failed(self, request_id, message):
+        error(message)
+        self.update_right_textEdit(request_id, "Translation failed: " + message)
 
     def handle_worker_thread_finished(self):
         self.worker_thread = None
@@ -433,21 +477,29 @@ class GUIWindow(QMainWindow):
 
     def translate(self):
         """Try to translate based on languages selected."""
+        self.translation_request_id += 1
+        self.queued_translation = None
+        self.right_textEdit.clear()
         if len(self.languages) < 1:
             return
         input_text = self.left_textEdit.toPlainText()
         input_combo_value = self.left_language_combo.currentIndex()
-        input_language = self.languages[input_combo_value]
         output_combo_value = self.right_language_combo.currentIndex()
+        if not (0 <= input_combo_value < len(self.languages)
+                and 0 <= output_combo_value < len(self.languages)):
+            return
+        input_language = self.languages[input_combo_value]
         output_language = self.languages[output_combo_value]
         translation = input_language.get_translation(output_language)
         if translation:
             bound_translation_function = partial(translation.translate, input_text)
             show_loading_message = len(input_text) > self.SHOW_LOADING_THRESHOLD
             new_worker_thread = TranslationThread(
-                bound_translation_function, show_loading_message
+                bound_translation_function, show_loading_message,
+                self.translation_request_id,
             )
             new_worker_thread.send_text_update.connect(self.update_right_textEdit)
+            new_worker_thread.failed.connect(self.translation_failed)
             new_worker_thread.finished.connect(self.handle_worker_thread_finished)
             if self.worker_thread is None:
                 self.worker_thread = new_worker_thread
@@ -461,6 +513,12 @@ class GUIWindow(QMainWindow):
 
 class GUIApplication:
     def __init__(self):
+        # PyTorch can lazily load Triton's LLVM libraries during translation.
+        # Load them before Qt initializes native libraries to avoid a startup
+        # crash in libtriton. Triton is absent from some PyTorch installations.
+        if importlib.util.find_spec("triton") is not None:
+            importlib.import_module("triton")
+
         self.app = QApplication([])
         self.translator = install_system_translator(self.app)
         self.main_window = GUIWindow()

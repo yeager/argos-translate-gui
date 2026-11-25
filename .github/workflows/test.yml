@@ -17,7 +17,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes qttools5-dev-tools
           python -m pip install --upgrade pip
-          python -m pip install pytest PyQt5 setuptools wheel
+          python -m pip install -r requirements.txt pytest setuptools wheel
       - name: Test catalogs
         run: pytest -q
       - name: Build translations
